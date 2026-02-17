@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Plymouth Theme Manager
+Comment=Install and manage Plymouth boot themes
+Exec=python3 /home/hellopratik/Desktop/plymouth-theme-manager/plymouth-theme-manager.py
+Icon=preferences-desktop-theme
+Terminal=false
+Categories=System;Settings;
+StartupNotify=true
+StartupWMClass=com.plymouth.pro.v11
