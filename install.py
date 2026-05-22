@@ -9,7 +9,7 @@ import subprocess
 import shutil
 from pathlib import Path
 
-print("Plymouth Theme Manager — Dependency Installer\n")
+print("Plymouth Theme Manager - Dependency Installer\n")
 
 # Detect package manager
 if shutil.which("apt"):
@@ -20,7 +20,10 @@ if shutil.which("apt"):
         "gir1.2-gtk-4.0",
         "python3-requests",
         "plymouth",
-        "plymouth-themes"
+        "plymouth-themes",
+        "grub-common",
+        "policykit-1",
+        "unzip"
     ]
 
 elif shutil.which("dnf"):
@@ -30,7 +33,10 @@ elif shutil.which("dnf"):
         "gtk4",
         "python3-requests",
         "plymouth",
-        "plymouth-system-theme"
+        "plymouth-system-theme",
+        "grub2-tools",
+        "polkit",
+        "unzip"
     ]
 
 elif shutil.which("pacman"):
@@ -39,7 +45,10 @@ elif shutil.which("pacman"):
         "python-gobject",
         "gtk4",
         "python-requests",
-        "plymouth"
+        "plymouth",
+        "grub",
+        "polkit",
+        "unzip"
     ]
 
 else:
@@ -51,7 +60,7 @@ print("Installing dependencies...\n")
 subprocess.run(PKG_INSTALL + packages)
 
 print("\nDone.")
-print("You can now run: python3 plymouth_theme_manager.py")
+print("You can now run: python3 plymouth-theme-manager.py")
 
 # Install desktop launcher
 desktop_src = Path(__file__).resolve().parent / "plymouth-theme-manager.desktop"
