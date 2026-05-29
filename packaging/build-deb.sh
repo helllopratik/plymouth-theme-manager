@@ -43,10 +43,10 @@ Version: $VERSION
 Section: utils
 Priority: optional
 Architecture: all
-Maintainer: Plymouth Theme Manager Maintainers <hellopratik@users.noreply.github.com>
+Maintainer: Plymouth Theme Manager Maintainers <helllopratik@users.noreply.github.com>
 Depends: python3, python3-gi, python3-gi-cairo, gir1.2-gtk-4.0, python3-requests, plymouth, plymouth-themes, grub-common, initramfs-tools, policykit-1 | polkitd, unzip
 Recommends: xdg-utils
-Homepage: https://github.com/hellopratik/plymouth-theme-manager
+Homepage: https://github.com/helllopratik/plymouth-theme-manager
 Description: Manage Plymouth animations and GRUB themes
  Plymouth Theme Manager is a GTK4 desktop app for installing and applying
  Plymouth boot animations, GRUB background images, and complete GRUB themes.

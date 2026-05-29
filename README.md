@@ -7,6 +7,11 @@ Plymouth boot animations, GRUB background images, and full GRUB themes.
 
 - View, preview, apply, and delete installed Plymouth themes from `/usr/share/plymouth/themes`
 - Install Plymouth themes from GitHub search results, direct URLs, or local archives
+- Change the mouse cursor theme for both GTK (GNOME) and KDE Plasma environments
+- Change the system icon theme for folders and applications
+- Apply and import Plasma Global Themes and Splash Screens
+- Install desktop components (cursors, icons, etc.) from GitHub or Pling/OpenDesktop
+- Import local desktop theme archives (ZIP/Tar) directly from the UI
 - Change the GRUB menu background image with PNG, JPG, JPEG, or TGA files
 - Install and apply complete GRUB themes from GitHub, local archives, or extracted folders
 - Search GRUB themes by name from GitHub or Pling/OpenDesktop
@@ -27,8 +32,9 @@ Plymouth boot animations, GRUB background images, and full GRUB themes.
 - GTK 4 Python bindings (`gi`)
 - `requests`
 - `pkexec`/polkit access for privileged system writes
-- `unzip` and tar support
+- `unzip` and `tar` support
 - `update-grub` or `grub-mkconfig`
+- **Optional**: `kde-cli-tools` and `plasma-desktop` (required for applying KDE Plasma themes/splash screens)
 
 ## Install dependencies
 
@@ -41,7 +47,7 @@ python3 install.py
 Or install manually on Ubuntu/Debian:
 
 ```bash
-sudo apt install -y python3 python3-gi python3-gi-cairo gir1.2-gtk-4.0 python3-requests plymouth plymouth-themes grub-common policykit-1 unzip
+sudo apt install -y python3 python3-gi python3-gi-cairo gir1.2-gtk-4.0 python3-requests plymouth plymouth-themes grub-common policykit-1 unzip tar
 ```
 
 ## Run from source
@@ -61,7 +67,7 @@ The generated package is written to `dist/`.
 Install it with:
 
 ```bash
-sudo apt install ./dist/plymouth-theme-manager_2.0.1_all.deb
+sudo apt install ./dist/plymouth-theme-manager_2.1.0_all.deb
 ```
 
 After package installation, launch it from your app menu or run:
@@ -72,7 +78,7 @@ plymouth-theme-manager
 
 ## Update checks
 
-The app checks `hellopratik/plymouth-theme-manager` by default:
+The app checks `helllopratik/plymouth-theme-manager` by default:
 
 1. `https://api.github.com/repos/<owner>/<repo>/releases/latest`
 2. `https://api.github.com/repos/<owner>/<repo>/tags`

@@ -26,11 +26,11 @@ from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk
 
 APP_ID = "com.plymouth.theme.manager"
 APP_NAME = "Plymouth Theme Manager"
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.1.0"
 ROOT_HELPER_FLAG = "--root-helper"
 UPDATE_REPO = os.environ.get(
     "PLYMOUTH_THEME_MANAGER_UPDATE_REPO",
-    "hellopratik/plymouth-theme-manager",
+    "helllopratik/plymouth-theme-manager",
 )
 
 THEME_BASE = "/usr/share/plymouth/themes"
@@ -50,6 +50,310 @@ GRUB_BACKGROUND_DIR = "/boot/grub/backgrounds/plymouth-theme-manager"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tga"}
 DOWNLOAD_DIR = Path.home() / "Downloads" / "Plymouth Theme Manager"
 ADMIN_SESSION = None
+
+CURSOR_PATHS = [
+    os.path.expanduser("~/.icons"),
+    os.path.expanduser("~/.local/share/icons"),
+    "/usr/share/icons",
+    "/usr/local/share/icons",
+]
+
+PLASMA_THEME_PATHS = [
+    os.path.expanduser("~/.local/share/plasma/look-and-feel"),
+    "/usr/share/plasma/look-and-feel",
+]
+
+PLASMA_SPLASH_PATHS = [
+    os.path.expanduser("~/.local/share/plasma/look-and-feel"),
+    "/usr/share/plasma/look-and-feel",
+]
+
+ICON_PATHS = [
+    os.path.expanduser("~/.local/share/icons"),
+    "/usr/share/icons",
+    "/usr/local/share/icons",
+]
+
+
+def is_plasma():
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").upper()
+    return "KDE" in desktop or "PLASMA" in desktop
+
+
+def get_kwriteconfig_cmd():
+    if shutil.which("kwriteconfig6"):
+        return "kwriteconfig6"
+    if shutil.which("kwriteconfig5"):
+        return "kwriteconfig5"
+    return None
+
+
+def get_lookandfeeltool_cmd():
+    return shutil.which("lookandfeeltool")
+
+
+def get_installed_cursors():
+    cursors = []
+    seen = set()
+    for base in CURSOR_PATHS:
+        if not os.path.exists(base):
+            continue
+        for item in os.listdir(base):
+            path = os.path.join(base, item)
+            if item in seen or not os.path.isdir(path):
+                continue
+            if os.path.exists(os.path.join(path, "cursors")):
+                cursors.append((item, path))
+                seen.add(item)
+    return sorted(cursors, key=lambda x: x[0].lower())
+
+
+def get_installed_icons():
+    icons = []
+    seen = set()
+    for base in ICON_PATHS:
+        if not os.path.exists(base):
+            continue
+        for item in os.listdir(base):
+            path = os.path.join(base, item)
+            if item in seen or not os.path.isdir(path):
+                continue
+            # Basic check for icon theme
+            if os.path.exists(os.path.join(path, "index.theme")) and not os.path.exists(
+                os.path.join(path, "cursors")
+            ):
+                icons.append((item, path))
+                seen.add(item)
+    return sorted(icons, key=lambda x: x[0].lower())
+
+
+def set_icon_theme(name):
+    if not name:
+        return
+    # GNOME / GTK
+    if shutil.which("gsettings"):
+        try:
+            subprocess.run(
+                ["gsettings", "set", "org.gnome.desktop.interface", "icon-theme", name],
+                check=False,
+            )
+        except Exception:
+            pass
+
+    # Plasma
+    cmd = get_kwriteconfig_cmd()
+    if cmd:
+        try:
+            subprocess.run(
+                [cmd, "--file", "kdeglobals", "--group", "Icons", "--key", "Theme", name],
+                check=False,
+            )
+            # Notify Plasma
+            if shutil.which("dbus-send"):
+                subprocess.run(
+                    [
+                        "dbus-send",
+                        "--type=signal",
+                        "--dest=org.kde.KWin",
+                        "/KWin",
+                        "org.kde.KWin.reloadConfig",
+                    ],
+                    check=False,
+                )
+        except Exception:
+            pass
+
+
+def set_cursor_theme(name):
+    if not name:
+        return
+    # GNOME / GTK
+    if shutil.which("gsettings"):
+        try:
+            subprocess.run(
+                ["gsettings", "set", "org.gnome.desktop.interface", "cursor-theme", name],
+                check=False,
+            )
+        except Exception:
+            pass
+
+    # Plasma
+    cmd = get_kwriteconfig_cmd()
+    if cmd:
+        try:
+            subprocess.run(
+                [cmd, "--file", "kcminputrc", "--group", "Mouse", "--key", "cursorTheme", name],
+                check=False,
+            )
+            # Notify Plasma of change
+            if shutil.which("dbus-send"):
+                subprocess.run(
+                    [
+                        "dbus-send",
+                        "--type=signal",
+                        "--dest=org.kde.KWin",
+                        "/KWin",
+                        "org.kde.KWin.reloadConfig",
+                    ],
+                    check=False,
+                )
+        except Exception:
+            pass
+
+
+def extract_archive(archive_path):
+    tmp_dir = tempfile.mkdtemp(prefix="boot-theme-archive-")
+    try:
+        # shutil.unpack_archive handles zip, tar, gztar, bztar, xztar (xz)
+        shutil.unpack_archive(archive_path, tmp_dir)
+        return tmp_dir
+    except Exception:
+        # Fallback to manual extraction for better control/older versions
+        try:
+            if zipfile.is_zipfile(archive_path):
+                safe_extract_zip(archive_path, tmp_dir)
+            elif tarfile.is_tarfile(archive_path):
+                safe_extract_tar(archive_path, tmp_dir)
+            else:
+                raise RuntimeError("Unsupported or corrupted archive.")
+            return tmp_dir
+        except Exception as e:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise RuntimeError(f"Could not extract archive: {e}")
+
+
+def install_desktop_theme_archive(archive_path, kind):
+    # kind: 'cursor', 'icon', 'plasma_theme', 'plasma_splash'
+    tmp_dir = extract_archive(archive_path)
+    try:
+        # Detect if this is actually a Plymouth theme
+        plymouth_matches = find_plymouth_theme_dirs(tmp_dir)
+        if plymouth_matches and kind not in ("cursor", "icon"):
+            # Redirect to Plymouth installation
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return ("plymouth", install_plymouth_archive(archive_path))
+
+        # Determine destination
+        if kind == "cursor" or kind == "icon":
+            dest_base = os.path.expanduser("~/.local/share/icons")
+        elif kind in ("plasma_theme", "plasma_splash"):
+            dest_base = os.path.expanduser("~/.local/share/plasma/look-and-feel")
+        else:
+            raise RuntimeError(f"Unknown desktop theme kind: {kind}")
+
+        os.makedirs(dest_base, exist_ok=True)
+        installed = []
+        for root, dirs, files in os.walk(tmp_dir):
+            is_valid = False
+            if kind == "cursor" and "cursors" in dirs:
+                is_valid = True
+            elif kind == "icon" and "index.theme" in files and "cursors" not in dirs:
+                is_valid = True
+            elif kind == "plasma_theme" and ("metadata.desktop" in files or "metadata.json" in files):
+                is_valid = True
+            elif kind == "plasma_splash" and (os.path.exists(os.path.join(root, "contents", "splash")) or "metadata.desktop" in files):
+                is_valid = True
+
+            if is_valid:
+                item_name = os.path.basename(root)
+                if not item_name or item_name.startswith("boot-theme-archive-"):
+                    item_name = safe_name(Path(archive_path).stem)
+
+                destination = os.path.join(dest_base, item_name)
+                if os.path.exists(destination):
+                    shutil.rmtree(destination)
+                shutil.copytree(root, destination)
+                installed.append(item_name)
+                dirs[:] = []
+
+        if not installed:
+            raise RuntimeError(f"No valid {kind.replace('_', ' ')} theme found in the archive.")
+
+        return (kind, installed)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def get_installed_plasma_themes():
+    tool = get_lookandfeeltool_cmd()
+    if tool:
+        try:
+            res = subprocess.run([tool, "-l"], text=True, capture_output=True, check=False)
+            if res.returncode == 0:
+                themes = []
+                for line in res.stdout.strip().splitlines():
+                    parts = line.split(":", 1)
+                    if len(parts) == 2:
+                        themes.append((parts[0].strip(), parts[1].strip()))
+                    else:
+                        themes.append((line.strip(), line.strip()))
+                return themes
+        except Exception:
+            pass
+
+    # Fallback: scan paths
+    themes = []
+    seen = set()
+    for base in PLASMA_THEME_PATHS:
+        if not os.path.exists(base):
+            continue
+        for item in os.listdir(base):
+            if item in seen:
+                continue
+            path = os.path.join(base, item)
+            if os.path.isdir(path):
+                themes.append((item, item))
+                seen.add(item)
+    return sorted(themes)
+
+
+def apply_plasma_theme(theme_id):
+    tool = get_lookandfeeltool_cmd()
+    if tool:
+        subprocess.run([tool, "-a", theme_id], check=True)
+    else:
+        raise RuntimeError(
+            "lookandfeeltool not found. This tool is required to apply Plasma themes and is typically "
+            "provided by the plasma-desktop package."
+        )
+
+
+def get_installed_plasma_splash_screens():
+    screens = []
+    seen = set()
+    for base in PLASMA_SPLASH_PATHS:
+        if not os.path.exists(base):
+            continue
+        for item in os.listdir(base):
+            if item in seen:
+                continue
+            path = os.path.join(base, item)
+            if os.path.isdir(path) and (
+                os.path.exists(os.path.join(path, "contents", "splash")) or 
+                os.path.exists(os.path.join(path, "metadata.desktop"))
+            ):
+                screens.append((item, path))
+                seen.add(item)
+    return sorted(screens)
+
+
+def apply_plasma_splash_screen(theme_id):
+    cmd = get_kwriteconfig_cmd()
+    if not cmd:
+        raise RuntimeError(
+            "kwriteconfig not found. This tool is required to apply Plasma splash screens and is "
+            "typically provided by the kde-cli-tools package."
+        )
+
+    subprocess.run(
+        [cmd, "--file", "ksplashrc", "--group", "KSplash", "--key", "Theme", theme_id],
+        check=True,
+    )
+    subprocess.run(
+        [cmd, "--file", "ksplashrc", "--group", "KSplash", "--key", "Engine", "KSplashQML"],
+        check=True,
+    )
+
 
 CSS = """
 window {
@@ -607,16 +911,22 @@ def safe_extract_tar(archive_path, destination):
 def extract_archive(archive_path):
     tmp_dir = tempfile.mkdtemp(prefix="boot-theme-archive-")
     try:
-        if zipfile.is_zipfile(archive_path):
-            safe_extract_zip(archive_path, tmp_dir)
-        elif tarfile.is_tarfile(archive_path):
-            safe_extract_tar(archive_path, tmp_dir)
-        else:
-            raise RuntimeError("Unsupported archive. Use .zip, .tar, .tar.gz, .tgz, .tar.xz, or .tar.bz2.")
+        # shutil.unpack_archive handles zip, tar, gztar, bztar, xztar (xz)
+        shutil.unpack_archive(archive_path, tmp_dir)
         return tmp_dir
     except Exception:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
+        # Fallback to manual extraction for better control/older versions
+        try:
+            if zipfile.is_zipfile(archive_path):
+                safe_extract_zip(archive_path, tmp_dir)
+            elif tarfile.is_tarfile(archive_path):
+                safe_extract_tar(archive_path, tmp_dir)
+            else:
+                raise RuntimeError("Unsupported or corrupted archive.")
+            return tmp_dir
+        except Exception as e:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise RuntimeError(f"Could not extract archive: {e}")
 
 
 def find_preview_image(folder):
@@ -730,6 +1040,62 @@ def install_grub_background(image_path, disable_theme=True):
     )
 
 
+def install_desktop_theme_archive(archive_path, kind):
+    # kind: 'cursor', 'icon', 'plasma_theme', 'plasma_splash'
+    tmp_dir = extract_archive(archive_path)
+    try:
+        # Detect if this is actually a Plymouth theme
+        plymouth_matches = find_plymouth_theme_dirs(tmp_dir)
+        if plymouth_matches and kind not in ("cursor", "icon"):
+            # Redirect to Plymouth installation
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return ("plymouth", install_plymouth_archive(archive_path))
+
+        # Determine destination
+        if kind == "cursor" or kind == "icon":
+            dest_base = os.path.expanduser("~/.local/share/icons")
+        elif kind in ("plasma_theme", "plasma_splash"):
+            dest_base = os.path.expanduser("~/.local/share/plasma/look-and-feel")
+        else:
+            raise RuntimeError(f"Unknown desktop theme kind: {kind}")
+
+        os.makedirs(dest_base, exist_ok=True)
+        installed = []
+        for root, dirs, files in os.walk(tmp_dir):
+            is_valid = False
+            # Check for cursor theme
+            if kind == "cursor" and "cursors" in dirs:
+                is_valid = True
+            # Check for icon theme (index.theme exists, but not a cursor theme)
+            elif kind == "icon" and "index.theme" in files and "cursors" not in dirs:
+                is_valid = True
+            # Check for Plasma Global Theme (look and feel)
+            elif kind == "plasma_theme" and ("metadata.desktop" in files or "metadata.json" in files):
+                is_valid = True
+            # Check for Plasma Splash Screen (often a look-and-feel sub-part)
+            elif kind == "plasma_splash" and (os.path.exists(os.path.join(root, "contents", "splash")) or "metadata.desktop" in files):
+                is_valid = True
+
+            if is_valid:
+                item_name = os.path.basename(root)
+                if not item_name or item_name.startswith("boot-theme-archive-"):
+                    item_name = safe_name(Path(archive_path).stem)
+
+                destination = os.path.join(dest_base, item_name)
+                if os.path.exists(destination):
+                    shutil.rmtree(destination)
+                shutil.copytree(root, destination)
+                installed.append(item_name)
+                dirs[:] = []
+
+        if not installed:
+            raise RuntimeError(f"No valid {kind.replace('_', ' ')} theme found in the archive.")
+
+        return (kind, installed)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def normalize_online_url(url, kind):
     url = url.strip()
     if not url:
@@ -779,8 +1145,17 @@ def fetch_ocs_content(content_id):
 def search_github_themes(query, kind):
     if kind == "plymouth":
         search = f"{query} plymouth theme" if query else "plymouth theme"
-    else:
+    elif kind == "grub":
         search = f"{query} grub theme theme.txt" if query else "grub theme theme.txt"
+    elif kind == "cursor":
+        search = f"{query} cursor theme" if query else "cursor theme"
+    elif kind == "icon":
+        search = f"{query} icon theme" if query else "icon theme"
+    elif kind == "plasma_theme":
+        search = f"{query} plasma global theme" if query else "plasma global theme"
+    else:
+        search = query
+
     response = requests.get(
         "https://api.github.com/search/repositories",
         params={"q": search, "sort": "stars", "per_page": 18},
@@ -805,19 +1180,56 @@ def search_github_themes(query, kind):
     return results
 
 
-def search_pling_grub_themes(query):
-    search = query if query else "grub theme"
+def search_pling_themes(query, kind):
+    # OCS Categories
+    categories = {
+        "plymouth": "110",
+        "grub": "109",
+        "cursor": "107",
+        "icon": "132",
+        "plasma_theme": "121",
+        "plasma_splash": "124",
+    }
+    cat_id = categories.get(kind, "")
+
+    params = {"pagesize": 18, "format": "json"}
+    if query:
+        params["search"] = query
+    if cat_id:
+        # Use multiple common parameter names for compatibility
+        params["categories"] = cat_id
+        params["cat"] = cat_id
+
     response = requests.get(
         "https://api.opendesktop.org/ocs/v1/content/data",
-        params={"search": search, "pagesize": 18, "format": "json"},
+        params=params,
         timeout=14,
         headers={"User-Agent": APP_NAME},
     )
     response.raise_for_status()
     results = []
+
+    # Filter keywords to avoid mixed results (e.g. GRUB in Plasma search)
+    forbidden = []
+    if kind != "grub":
+        forbidden.append("grub")
+    if kind != "plymouth":
+        forbidden.append("plymouth")
+
     for item in response.json().get("data", []):
-        if "grub" not in f"{item.get('typename', '')} {item.get('name', '')}".lower():
+        name = (item.get("name") or "").lower()
+        summary = (item.get("summary") or "").lower()
+        typename = (item.get("typename") or "").lower()
+
+        # Check forbidden words
+        if any(f in name or f in summary or f in typename for f in forbidden):
             continue
+
+        # For Plasma Global Themes, require some relevant keyword if searching specifically
+        if kind == "plasma_theme" and not any(k in name or k in summary or k in typename for k in ["plasma", "global", "look", "feel"]):
+            # Don't skip, but maybe deprioritize? Actually, let's just trust category + forbidden for now.
+            pass
+
         results.append(
             {
                 "name": item.get("name") or f"Pling item {item.get('id')}",
@@ -826,7 +1238,7 @@ def search_pling_grub_themes(query):
                 "score": item.get("downloads") or "0",
                 "score_label": "downloads",
                 "source": "Pling",
-                "kind": "grub",
+                "kind": kind,
                 "zip": item.get("downloadlink1") or "",
                 "page": item.get("detailpage") or f"https://www.opendesktop.org/p/{item.get('id')}",
             }
@@ -1042,6 +1454,7 @@ class ThemeManager(Gtk.Application):
 
         self.stack.add_titled(self.create_plymouth_page(), "plymouth", "Plymouth")
         self.stack.add_titled(self.create_grub_page(), "grub", "GRUB")
+        self.stack.add_titled(self.create_desktop_page(), "desktop", "Desktop & UI")
         self.stack.add_titled(self.create_online_page(), "online", "Online")
         self.stack.add_titled(self.create_import_page(), "imports", "Imports")
         self.stack.add_titled(self.create_updates_page(), "updates", "Updates")
@@ -1054,6 +1467,7 @@ class ThemeManager(Gtk.Application):
 
         self.refresh_installed()
         self.refresh_grub()
+        self.refresh_desktop()
         self.perform_online_search()
 
     def load_css(self):
@@ -1484,6 +1898,250 @@ class ThemeManager(Gtk.Application):
             refresh=self.refresh_grub,
         )
 
+    # Desktop page
+
+    def create_desktop_page(self):
+        page = self.make_page(
+            "Desktop and UI themes",
+            "Customise your mouse cursor, icon themes, and Plasma desktop settings.",
+        )
+
+        self.desktop_scroller = Gtk.ScrolledWindow(vexpand=True)
+        content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        self.desktop_scroller.set_child(content_box)
+
+        # Cursors
+        cursor_card = self.make_card(
+            "Mouse cursors", "Change the cursor theme for GTK and Plasma applications."
+        )
+        cursor_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.cursor_dropdown = Gtk.DropDown.new_from_strings([])
+        self.apply_cursor_btn = Gtk.Button(label="Apply cursor")
+        self.apply_cursor_btn.add_css_class("suggested-action")
+        self.apply_cursor_btn.connect("clicked", self.on_apply_cursor_clicked)
+        import_cursor = Gtk.Button(label="Import")
+        import_cursor.connect("clicked", lambda _: self.on_import_desktop_clicked("cursor"))
+        cursor_row.append(self.cursor_dropdown)
+        cursor_row.append(self.apply_cursor_btn)
+        cursor_row.append(import_cursor)
+        cursor_card.append(cursor_row)
+        self.cursor_status = label("Ready.", "muted", wrap=True)
+        cursor_card.append(self.cursor_status)
+        content_box.append(cursor_card)
+
+        # Icons
+        icon_card = self.make_card(
+            "Icon themes", "Change the system icon theme for folders and applications."
+        )
+        icon_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.icon_dropdown = Gtk.DropDown.new_from_strings([])
+        self.apply_icon_btn = Gtk.Button(label="Apply icons")
+        self.apply_icon_btn.add_css_class("suggested-action")
+        self.apply_icon_btn.connect("clicked", self.on_apply_icon_clicked)
+        import_icon = Gtk.Button(label="Import")
+        import_icon.connect("clicked", lambda _: self.on_import_desktop_clicked("icon"))
+        icon_row.append(self.icon_dropdown)
+        icon_row.append(self.apply_icon_btn)
+        icon_row.append(import_icon)
+        icon_card.append(icon_row)
+        self.icon_status = label("Ready.", "muted", wrap=True)
+        icon_card.append(self.icon_status)
+        content_box.append(icon_card)
+
+        # Plasma Global Themes
+        self.plasma_theme_card = self.make_card(
+            "Plasma global themes", "Apply a complete look-and-feel package to your Plasma desktop."
+        )
+        theme_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.plasma_theme_dropdown = Gtk.DropDown.new_from_strings([])
+        self.apply_plasma_theme_btn = Gtk.Button(label="Apply theme")
+        self.apply_plasma_theme_btn.add_css_class("suggested-action")
+        self.apply_plasma_theme_btn.connect("clicked", self.on_apply_plasma_theme_clicked)
+        import_theme = Gtk.Button(label="Import")
+        import_theme.connect("clicked", lambda _: self.on_import_desktop_clicked("plasma_theme"))
+        theme_row.append(self.plasma_theme_dropdown)
+        theme_row.append(self.apply_plasma_theme_btn)
+        theme_row.append(import_theme)
+        self.plasma_theme_card.append(theme_row)
+        self.plasma_theme_status = label("Ready.", "muted", wrap=True)
+        self.plasma_theme_card.append(self.plasma_theme_status)
+        content_box.append(self.plasma_theme_card)
+
+        # Plasma Splash Screens
+        self.plasma_splash_card = self.make_card(
+            "Plasma splash screens", "The animation that appears while your Plasma session is loading."
+        )
+        splash_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.plasma_splash_dropdown = Gtk.DropDown.new_from_strings([])
+        self.apply_plasma_splash_btn = Gtk.Button(label="Apply splash")
+        self.apply_plasma_splash_btn.add_css_class("suggested-action")
+        self.apply_plasma_splash_btn.connect("clicked", self.on_apply_plasma_splash_clicked)
+        import_splash = Gtk.Button(label="Import")
+        import_splash.connect("clicked", lambda _: self.on_import_desktop_clicked("plasma_splash"))
+        splash_row.append(self.plasma_splash_dropdown)
+        splash_row.append(self.apply_plasma_splash_btn)
+        splash_row.append(import_splash)
+        self.plasma_splash_card.append(splash_row)
+        self.plasma_splash_status = label("Ready.", "muted", wrap=True)
+        self.plasma_splash_card.append(self.plasma_splash_status)
+        content_box.append(self.plasma_splash_card)
+
+        # KDE Note
+        self.kde_note_card = self.make_card(
+            "Manual KDE Setup", 
+            "If you are not using the KDE Plasma desktop, Plasma themes and splash screens "
+            "will be installed but cannot be applied automatically. You can find them in "
+            "~/.local/share/plasma/look-and-feel/."
+        )
+        content_box.append(self.kde_note_card)
+
+        page.append(self.desktop_scroller)
+        return page
+
+    def refresh_desktop(self):
+        if not hasattr(self, "cursor_dropdown"):
+            return
+
+        # Cursors
+        cursors = get_installed_cursors()
+        cursor_names = [c[0] for c in cursors]
+        self.cursor_dropdown.set_model(Gtk.StringList.new(cursor_names))
+
+        # Icons
+        icons = get_installed_icons()
+        icon_names = [i[0] for i in icons]
+        self.icon_dropdown.set_model(Gtk.StringList.new(icon_names))
+
+        # Plasma Themes
+        plasma_themes = get_installed_plasma_themes()
+        self.plasma_theme_ids = [t[0] for t in plasma_themes]
+        theme_labels = [f"{t[1]} ({t[0]})" if t[0] != t[1] else t[0] for t in plasma_themes]
+        self.plasma_theme_dropdown.set_model(Gtk.StringList.new(theme_labels))
+
+        # Plasma Splash
+        plasma_screens = get_installed_plasma_splash_screens()
+        self.plasma_splash_ids = [s[0] for s in plasma_screens]
+        self.plasma_splash_dropdown.set_model(Gtk.StringList.new(self.plasma_splash_ids))
+
+        # Tool availability
+        has_gsettings = shutil.which("gsettings") is not None
+        has_kwriteconfig = get_kwriteconfig_cmd() is not None
+        has_lookandfeel = get_lookandfeeltool_cmd() is not None
+
+        # Visibility logic
+        has_plasma = is_plasma() or has_lookandfeel
+        has_local_themes = len(plasma_themes) > 0 or len(plasma_screens) > 0
+        
+        # Show Plasma cards if on Plasma OR if themes are already installed locally
+        self.plasma_theme_card.set_visible(has_plasma or len(plasma_themes) > 0)
+        self.plasma_splash_card.set_visible(has_plasma or len(plasma_screens) > 0)
+        self.kde_note_card.set_visible(not has_plasma and has_local_themes)
+
+        # Button sensitivity
+        self.apply_cursor_btn.set_sensitive((has_gsettings or has_kwriteconfig) and len(cursors) > 0)
+        self.apply_icon_btn.set_sensitive((has_gsettings or has_kwriteconfig) and len(icons) > 0)
+        self.apply_plasma_theme_btn.set_sensitive(has_lookandfeel and len(plasma_themes) > 0)
+        self.apply_plasma_splash_btn.set_sensitive(has_kwriteconfig and len(plasma_screens) > 0)
+
+    def on_apply_icon_clicked(self, _button):
+        idx = self.icon_dropdown.get_selected()
+        icons = get_installed_icons()
+        if idx < 0 or idx >= len(icons):
+            return
+        name = icons[idx][0]
+
+        def task():
+            set_icon_theme(name)
+            return name
+
+        self.run_task(
+            self.icon_status,
+            f"Applying icon theme {name}...",
+            task,
+            lambda result: f"Icon theme {result} applied.",
+        )
+
+    def on_import_desktop_clicked(self, kind):
+        self.choose_path(f"Import {kind.replace('_', ' ')} archive", lambda path: self.on_desktop_archive_path(path, kind))
+
+    def on_desktop_archive_path(self, path, kind):
+        status_map = {
+            "cursor": self.cursor_status,
+            "icon": self.icon_status,
+            "plasma_theme": self.plasma_theme_status,
+            "plasma_splash": self.plasma_splash_status,
+        }
+        status = status_map.get(kind, self.cursor_status)
+
+        def task():
+            return install_desktop_theme_archive(path, kind)
+
+        def done(result):
+            installed_kind, names = result
+            tab = "Plymouth" if installed_kind == "plymouth" else "Desktop & UI"
+            msg = summarize_names(names, f"{installed_kind} theme", f"{installed_kind} themes")
+            return f"{msg} (See {tab} tab)"
+
+        self.run_task(
+            status,
+            f"Installing {kind.replace('_', ' ')} archive...",
+            task,
+            done,
+            refresh=self.refresh_desktop,
+        )
+
+    def on_apply_cursor_clicked(self, _button):
+        idx = self.cursor_dropdown.get_selected()
+        cursors = get_installed_cursors()
+        if idx < 0 or idx >= len(cursors):
+            return
+        name = cursors[idx][0]
+
+        def task():
+            set_cursor_theme(name)
+            return name
+
+        self.run_task(
+            self.cursor_status,
+            f"Applying cursor theme {name}...",
+            task,
+            lambda result: f"Cursor theme {result} applied. Some apps may need a restart.",
+        )
+
+    def on_apply_plasma_theme_clicked(self, _button):
+        idx = self.plasma_theme_dropdown.get_selected()
+        if not hasattr(self, "plasma_theme_ids") or idx < 0 or idx >= len(self.plasma_theme_ids):
+            return
+        theme_id = self.plasma_theme_ids[idx]
+
+        def task():
+            apply_plasma_theme(theme_id)
+            return theme_id
+
+        self.run_task(
+            self.plasma_theme_status,
+            f"Applying Plasma theme {theme_id}...",
+            task,
+            lambda result: f"Plasma theme {result} applied.",
+        )
+
+    def on_apply_plasma_splash_clicked(self, _button):
+        idx = self.plasma_splash_dropdown.get_selected()
+        if not hasattr(self, "plasma_splash_ids") or idx < 0 or idx >= len(self.plasma_splash_ids):
+            return
+        theme_id = self.plasma_splash_ids[idx]
+
+        def task():
+            apply_plasma_splash_screen(theme_id)
+            return theme_id
+
+        self.run_task(
+            self.plasma_splash_status,
+            f"Applying Plasma splash screen {theme_id}...",
+            task,
+            lambda result: f"Plasma splash screen {result} applied.",
+        )
+
     # Online page
 
     def create_online_page(self):
@@ -1494,7 +2152,16 @@ class ThemeManager(Gtk.Application):
 
         search_card = self.make_card("Search")
         search_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        self.online_kind = Gtk.DropDown.new_from_strings(["Plymouth themes", "GRUB themes"])
+        self.online_kind = Gtk.DropDown.new_from_strings(
+            [
+                "Plymouth themes",
+                "GRUB themes",
+                "Mouse cursors",
+                "Icon themes",
+                "Plasma Global Themes",
+                "Plasma Splash Screens",
+            ]
+        )
         self.online_grub_source = Gtk.DropDown.new_from_strings(["GitHub", "Pling"])
         self.search_entry = Gtk.SearchEntry(hexpand=True)
         self.search_entry.set_placeholder_text("Search theme name")
@@ -1515,7 +2182,15 @@ class ThemeManager(Gtk.Application):
         url_card = self.make_card("Install from URL")
         url_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.url_kind = Gtk.DropDown.new_from_strings(
-            ["Plymouth archive/repo", "GRUB theme archive/repo", "GRUB background image"]
+            [
+                "Plymouth theme",
+                "GRUB theme",
+                "GRUB background",
+                "Mouse cursor",
+                "Icon theme",
+                "Plasma Global Theme",
+                "Plasma Splash Screen",
+            ]
         )
         self.url_entry = Gtk.Entry(hexpand=True)
         self.url_entry.set_placeholder_text("https://github.com/user/theme or a direct archive/image URL")
@@ -1544,13 +2219,14 @@ class ThemeManager(Gtk.Application):
         self.search_progress.set_visible(True)
         self.search_progress.pulse()
         query = self.search_entry.get_text().strip()
-        kind = "plymouth" if self.online_kind.get_selected() == 0 else "grub"
-        source = "pling" if kind == "grub" and self.online_grub_source.get_selected() == 1 else "github"
+        idx = self.online_kind.get_selected()
+        kind = ["plymouth", "grub", "cursor", "icon", "plasma_theme", "plasma_splash"][idx]
+        source = "pling" if kind != "plymouth" and self.online_grub_source.get_selected() == 1 else "github"
 
         def worker():
             try:
                 if source == "pling":
-                    results = search_pling_grub_themes(query)
+                    results = search_pling_themes(query, kind)
                 else:
                     results = search_github_themes(query, kind)
                 GLib.idle_add(self.update_online_ui, results, None)
@@ -1588,14 +2264,22 @@ class ThemeManager(Gtk.Application):
             tmp_path = None
             try:
                 tmp_path = download_to_downloads(item["zip"], row.update_progress)
-                if item["kind"] == "plymouth":
+                kind = item["kind"]
+                
+                if kind == "plymouth":
                     installed = install_plymouth_archive(tmp_path)
                     GLib.idle_add(self.refresh_installed)
-                    row.mark_done(summarize_names(installed, "Plymouth theme", "Plymouth themes"))
-                else:
+                    row.mark_done("Installed (See Plymouth tab)")
+                elif kind == "grub":
                     installed = install_grub_theme_archive(tmp_path)
                     GLib.idle_add(self.refresh_grub)
-                    row.mark_done(summarize_names(installed, "GRUB theme", "GRUB themes"))
+                    row.mark_done("Installed (See GRUB tab)")
+                else:
+                    # Desktop themes
+                    installed_kind, installed = install_desktop_theme_archive(tmp_path, kind)
+                    tab = "Plymouth" if installed_kind == "plymouth" else "Desktop & UI"
+                    GLib.idle_add(self.refresh_installed if installed_kind == "plymouth" else self.refresh_desktop)
+                    row.mark_done(f"Installed (See {tab} tab)")
             except Exception as error:
                 row.mark_failed("Failed")
                 GLib.idle_add(self.show_msg, "Install failed", str(error))
@@ -1604,7 +2288,8 @@ class ThemeManager(Gtk.Application):
 
     def on_install_url_clicked(self, _button):
         selection = self.url_kind.get_selected()
-        kind = ["plymouth", "grub", "background"][selection]
+        kinds = ["plymouth", "grub", "background", "cursor", "icon", "plasma_theme", "plasma_splash"]
+        kind = kinds[selection]
         url = self.url_entry.get_text().strip()
 
         def task():
@@ -1614,20 +2299,25 @@ class ThemeManager(Gtk.Application):
                 lambda _fraction, message: GLib.idle_add(self.url_status.set_text, message),
             )
             if kind == "plymouth":
-                return install_plymouth_archive(tmp_path)
-            if kind == "grub":
-                return install_grub_theme_archive(tmp_path)
-            return install_grub_background(tmp_path, True)
+                return ("plymouth", install_plymouth_archive(tmp_path))
+            elif kind == "grub":
+                return ("grub", install_grub_theme_archive(tmp_path))
+            elif kind == "background":
+                return ("grub", install_grub_background(tmp_path, True))
+            else:
+                return install_desktop_theme_archive(tmp_path, kind)
 
         def done(result):
-            if kind == "background":
-                return f"GRUB background applied: {result}"
-            if kind == "plymouth":
-                return summarize_names(result, "Plymouth theme", "Plymouth themes")
-            return summarize_names(result, "GRUB theme", "GRUB themes")
+            installed_kind, val = result
+            if installed_kind == "grub" and isinstance(val, str):
+                return f"GRUB background applied: {val}"
+            
+            tab = "Plymouth" if installed_kind == "plymouth" else "GRUB" if installed_kind == "grub" else "Desktop & UI"
+            label_text = installed_kind.replace("_", " ")
+            return f"{summarize_names(val, label_text, f'{label_text}s')} (See {tab} tab)"
 
-        refresh = self.refresh_installed if kind == "plymouth" else self.refresh_grub
-        self.run_task(self.url_status, "Downloading and installing URL...", task, done, refresh=refresh)
+        refresh = self.refresh_installed # Simplest to refresh all logic later or check kind
+        self.run_task(self.url_status, "Downloading and installing URL...", task, done, refresh=lambda: (self.refresh_installed(), self.refresh_grub(), self.refresh_desktop()))
 
     # Imports page
 
